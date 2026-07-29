@@ -1,0 +1,489 @@
+import React, { useState, useEffect, useRef } from 'react';
+import {
+  fetchUsers,
+  fetchDevicesByDealer,
+  checkVehicleNoExists,
+  createVehicle,
+} from '../../../api/vehicleApi';
+import { useTheme } from '../../../context/ThemeContext';
+
+const safeA = v => (Array.isArray(v) ? v : []);
+
+const ACC_DEFAULT = '#3d2b6b';
+const HDR_DEFAULT = '#3d2b6b';
+let ACC = ACC_DEFAULT;
+let HDR = HDR_DEFAULT;
+
+const inp = {
+  padding: '7px 10px', border: '1px solid #d0d7de', borderRadius: 3,
+  fontSize: 13, width: '100%', outline: 'none', boxSizing: 'border-box',
+  fontFamily: 'inherit', background: '#fff', color: '#1a1f2e',
+};
+const sel = {
+  ...inp, cursor: 'pointer', appearance: 'none', paddingRight: 30,
+  backgroundImage: `url("data:image/svg+xml;charset=UTF-8,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23555' stroke-width='2'%3e%3cpolyline points='6 9 12 15 18 9'%3e%3c/polyline%3e%3c/svg%3e")`,
+  backgroundRepeat: 'no-repeat', backgroundPosition: 'right 8px center', backgroundSize: 16,
+};
+const lbl = { fontSize: 12, fontWeight: 600, color: '#374151', marginBottom: 4, display: 'block' };
+// const onFocus = e => { e.target.style.borderColor = ACC; e.target.style.boxShadow = `0 0 0 2px rgba(61,43,107,0.12)`; };
+// const onBlur  = e => { e.target.style.borderColor = '#d0d7de'; e.target.style.boxShadow = 'none'; };
+
+const Fld = ({ label, req, opt, children }) => (
+  <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+    <label style={lbl}>
+      {label}
+      {req && <span style={{ color: '#ef4444' }}> *</span>}
+      {opt && <span style={{ color: '#9ca3af', fontWeight: 400, fontSize: 11 }}> (Optional)</span>}
+    </label>
+    {children}
+  </div>
+);
+
+const Grid4 = ({ children, style }) => (
+  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: '14px 16px', ...style }}>
+    {children}
+  </div>
+);
+
+const SH = ({ title, color = ACC_DEFAULT }) => (
+  <div style={{
+    fontSize: 12, fontWeight: 700, color: color, textTransform: 'uppercase',
+    letterSpacing: '0.06em', padding: '10px 0 6px', borderBottom: `2px solid ${color}`, marginBottom: 14,
+  }}>
+    {title}
+  </div>
+);
+
+const Spin = () => (
+  <span style={{
+    display: 'inline-block', width: 10, height: 10, borderRadius: '50%',
+    border: '2px solid #d0d7de', borderTopColor: ACC,
+    animation: 'vSpin .7s linear infinite', marginLeft: 6, verticalAlign: 'middle',
+  }} />
+);
+
+const VEH_TYPES  = ['car', 'truck', 'bus', 'bike', 'tractor', 'auto', 'van', 'pickup', 'tanker', 'JCB'];
+const FUEL_TYPES = ['Petrol','Diesel','CNG','Electric'];
+const BODY_TYPES = ['Sedan','SUV','Hatchback','MUV','Van','Truck','Bus','Pickup','Open','Closed'];
+const OWN_TYPES  = ['Owner','Leased','Company','Government','Private'];
+
+// ─── Resolve dealer ID from currentUser prop + localStorage fallback ──────────
+// Tries all possible key names the frontend auth store might use:
+//   user_id  → set by backend auth middleware (ideal)
+//   id       → common shorthand
+//   _id      → MongoDB ObjectId (less common for numeric ID)
+// Also falls back to reading 'fleet_user' from localStorage in case the prop
+// arrives late (async auth context) or uses a different key name.
+const resolveDealerId = (currentUser) => {
+  // 1. Try prop directly — all possible key names
+  if (currentUser?.user_id)  return currentUser.user_id;
+  if (currentUser?.id)       return currentUser.id;
+  if (currentUser?.userId)   return currentUser.userId;
+
+  // 2. Fallback: read from localStorage (fleet_user is set on login)
+  try {
+    const stored = localStorage.getItem('fleet_user');
+    if (stored) {
+      const parsed = JSON.parse(stored);
+      if (parsed?.user_id) return parsed.user_id;
+      if (parsed?.id)      return parsed.id;
+      if (parsed?.userId)  return parsed.userId;
+    }
+  } catch (_) { /* ignore parse errors */ }
+
+  return null;
+};
+
+// ─── Resolve adminId the same way ────────────────────────────────────────────
+const resolveAdminId = (currentUser) => {
+  if (currentUser?.adminId)  return currentUser.adminId;
+
+  try {
+    const stored = localStorage.getItem('fleet_user');
+    if (stored) {
+      const parsed = JSON.parse(stored);
+      if (parsed?.adminId) return parsed.adminId;
+    }
+  } catch (_) { /* ignore */ }
+
+  return null;
+};
+
+export default function AddVehicleDealer({ open, onClose, onSaved, currentUser }) {
+  const theme = useTheme();
+  ACC = theme?.activeColor || ACC_DEFAULT;
+  HDR = theme?.activeColor || HDR_DEFAULT;
+
+  const onFocus = e => { e.target.style.borderColor = ACC; e.target.style.boxShadow = `0 0 0 2px ${ACC}30`; };
+  const onBlur  = e => { e.target.style.borderColor = '#d0d7de'; e.target.style.boxShadow = 'none'; };
+
+  const [users,   setUsers]   = useState([]);
+  const [devices, setDevices] = useState([]);
+
+  const [ldUsers,   setLdUsers]   = useState(false);
+  const [ldDevices, setLdDevices] = useState(false);
+
+  const [errUsers,   setErrUsers]   = useState('');
+  const [errDevices, setErrDevices] = useState('');
+
+  const [selUser, setSelUser] = useState('');
+  const [selImei, setSelImei] = useState('');
+
+  const today    = new Date().toISOString().slice(0, 10);
+  const nextYear = new Date(new Date().setFullYear(new Date().getFullYear() + 1))
+                     .toISOString().slice(0, 10);
+
+  const INIT = {
+    vehicle_no: '', vehicle_type: '', speed_limit_kph: '60', mileage: '1',
+    fuel_type: '', sub_start: today, sub_due: nextYear,
+    nickname: '', odometer: '', duration_odometer: '',
+    parking_alarm: false,
+    owner_name: '', owned_by: '', vehicle_brand: '', vehicle_model: '',
+    vehicle_body: '', capacity: '0', manufacture_date: today, purchase_date: today,
+  };
+
+  const [vF,     setVF]     = useState(INIT);
+  const [saving, setSaving] = useState(false);
+  const [msg,    setMsg]    = useState('');
+  const [vnoErr, setVnoErr] = useState(false);
+  const [detail, setDetail] = useState(false);
+
+  const setField = k => e =>
+    setVF(p => ({ ...p, [k]: e.target.type === 'checkbox' ? e.target.checked : e.target.value }));
+
+  const vnoTimer = useRef(null);
+
+  // ─── Load users + devices when modal opens ──────────────────────────────────
+  useEffect(() => {
+    if (!open) return;
+    resetAll();
+
+    // ── FIX: resolve dealerId robustly from prop OR localStorage ──────────────
+    const dealerId = resolveDealerId(currentUser);
+
+    console.log('[AddVehicleDealer] currentUser prop:', currentUser);
+    console.log('[AddVehicleDealer] resolved dealerId:', dealerId);
+
+    if (!dealerId) {
+      setErrUsers('Could not resolve dealer ID — please re-login.');
+      setErrDevices('Could not resolve dealer ID — please re-login.');
+      return;
+    }
+
+    // Load users under this dealer
+    setLdUsers(true);
+    setErrUsers('');
+    fetchUsers(dealerId)
+      .then(data => {
+        const list = safeA(data);
+        setUsers(list);
+        if (list.length === 0) setErrUsers('No users found under your account');
+      })
+      .catch(err => {
+        console.error('[fetchUsers]', err);
+        setErrUsers('Failed to load users. Please try again.');
+      })
+      .finally(() => setLdUsers(false));
+
+    // Load ALL devices from this dealer (same as admin form's fetchDevicesByDealer)
+    // Then filter to show only free devices in the selector
+    setLdDevices(true);
+    setErrDevices('');
+    fetchDevicesByDealer(dealerId)
+      .then(data => {
+        const list = safeA(data);
+        setDevices(list);
+        if (list.length === 0) setErrDevices('No devices found under your account');
+      })
+      .catch(err => {
+        console.error('[fetchDevicesByDealer]', err);
+        setErrDevices('Failed to load devices. Please try again.');
+      })
+      .finally(() => setLdDevices(false));
+  }, [open]);
+
+  const resetAll = () => {
+    setMsg(''); setVnoErr(false); setVF(INIT); setDetail(false);
+    setUsers([]); setDevices([]);
+    setSelUser(''); setSelImei('');
+    setErrUsers(''); setErrDevices('');
+    if (vnoTimer.current) clearTimeout(vnoTimer.current);
+  };
+
+  const checkVno = val => {
+    setVnoErr(false);
+    if (vnoTimer.current) clearTimeout(vnoTimer.current);
+    if (!val || val.length < 3) return;
+    vnoTimer.current = setTimeout(async () => {
+      try {
+        const exists = await checkVehicleNoExists(val);
+        setVnoErr(exists);
+      } catch (err) {
+        console.error('[checkVno]', err);
+      }
+    }, 500);
+  };
+
+  const save = async () => {
+    const vno = (vF.vehicle_no || '').toUpperCase().trim();
+    if (!vno)     return setMsg('✗ Vehicle number is required');
+    if (vnoErr)   return setMsg('✗ Vehicle number already exists');
+    if (!selUser) return setMsg('✗ Please select a User');
+    if (!selImei) return setMsg('✗ Please select a Device (IMEI)');
+
+    // Check if device already assigned
+    const selectedDevice = devices.find(d => (d.IMEI_No || d.imei) === selImei);
+    if (selectedDevice?.hasVehicle) {
+      return setMsg(`✗ Device ${selImei} already assigned to "${selectedDevice.vehicleInfo?.vehicleNo}"`);
+    }
+
+    // ── FIX: resolve IDs robustly for save payload too ────────────────────────
+    const dealerId = resolveDealerId(currentUser);
+    const adminId  = resolveAdminId(currentUser);
+
+    setSaving(true);
+    setMsg('');
+    try {
+    const payload = {
+      ...vF,
+      vehicle_no:        vno,
+      speed_limit_kph:   Number(vF.speed_limit_kph)   || 60,
+      mileage:           Number(vF.mileage)           || 1,
+      odometer:          Number(vF.odometer)          || 0,
+      duration_odometer: Number(vF.duration_odometer) || 0,
+      capacity:          Number(vF.capacity)          || 0,
+      parking_alarm:     !!vF.parking_alarm,
+      user_id:           parseInt(selUser),
+      dealer_id:         dealerId  || null,
+      admin_id:          adminId   || null,
+      super_admin_id:    null,
+      device_imei:       selImei,
+    };
+
+      await createVehicle(payload);
+      setMsg('✓ Vehicle added successfully!');
+      onSaved?.();
+      setTimeout(() => { onClose?.(); resetAll(); }, 900);
+    } catch (err) {
+      const m = err.message || 'Network error';
+      if (/already exists|duplicate|11000/i.test(m)) {
+        setVnoErr(true);
+        setMsg('✗ Vehicle number already exists');
+      } else {
+        setMsg(`✗ ${m}`);
+      }
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (!open) return null;
+
+  // Filter to show ONLY FREE devices from this dealer (same logic as admin form)
+  const freeDevices = devices.filter(d => !d.hasVehicle);
+
+  return (
+    <div
+      style={{
+        position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.55)', zIndex: 9999,
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        padding: '20px 0', overflowY: 'auto',
+      }}
+      onClick={e => e.target === e.currentTarget && (onClose?.(), resetAll())}
+    >
+      <div style={{
+        background: '#fff', width: '97%', maxWidth: 1400, borderRadius: 4,
+        boxShadow: '0 32px 80px rgba(0,0,0,0.35)', display: 'flex', flexDirection: 'column',
+        maxHeight: '90vh', margin: 'auto',
+      }}>
+
+        {/* Header */}
+        <div style={{
+          background: HDR, color: '#fff', padding: '11px 20px', display: 'flex',
+          alignItems: 'center', justifyContent: 'space-between',
+          flexShrink: 0, borderRadius: '4px 4px 0 0',
+        }}>
+          <span style={{ fontWeight: 700, fontSize: 15 }}>Add Vehicle</span>
+          <button onClick={() => { onClose?.(); resetAll(); }}
+            style={{ background: 'rgba(255,255,255,0.18)', border: 'none', color: '#fff', fontSize: 20, cursor: 'pointer', width: 30, height: 30, display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: 3 }}>✕</button>
+        </div>
+
+        {/* Body */}
+        <div style={{ flex: 1, overflowY: 'auto', padding: 20 }}>
+
+          {msg && msg.startsWith('✗') && (
+            <div style={{ marginBottom: 14, padding: '9px 14px', background: '#fff5f5', border: '1px solid #fca5a5', borderLeft: '3px solid #ef4444', fontSize: 12, color: '#dc2626', fontWeight: 600, borderRadius: 3 }}>
+              ⚠️ {msg.replace('✗ ', '')}
+            </div>
+          )}
+
+            <SH title="Assign User" color={ACC} />
+          <Grid4 style={{ marginBottom: 20 }}>
+
+            {/* ① User */}
+            <Fld label="Select User" req>
+              <div style={{ position: 'relative' }}>
+                <select style={{ ...sel, borderColor: selUser ? ACC : '#d0d7de' }}
+                  value={selUser} onChange={e => setSelUser(e.target.value)}
+                  onFocus={onFocus} onBlur={onBlur} disabled={ldUsers}>
+                  <option value="">{ldUsers ? 'Loading users…' : '— Select User —'}</option>
+                  {users.map(u => (
+                    <option key={u.user_id} value={String(u.user_id)}>
+                      {u.username}
+                    </option>
+                  ))}
+                </select>
+                {ldUsers && <span style={{ position: 'absolute', right: 34, top: '50%', transform: 'translateY(-50%)' }}><Spin /></span>}
+              </div>
+              {errUsers && <span style={{ fontSize: 10, color: '#ef4444', fontWeight: 600 }}>{errUsers}</span>}
+            </Fld>
+
+            {/* ② Device - Shows ONLY FREE devices from this dealer */}
+            <Fld label="Device" req>
+              <div style={{ position: 'relative' }}>
+                <select
+                  style={{ ...sel, borderColor: selImei ? ACC : '#d0d7de' }}
+                  value={selImei}
+                  onChange={e => setSelImei(e.target.value)}
+                  onFocus={onFocus} onBlur={onBlur}
+                  disabled={ldDevices}>
+                  <option value="">
+                    {ldDevices ? 'Loading devices…'
+                      : freeDevices.length === 0 ? 'No free devices available'
+                      : '— Select Device —'}
+                  </option>
+                  {freeDevices.map(d => {
+                    const imeiVal = d.IMEI_No || d.imei;
+                    return (
+                      <option key={imeiVal} value={imeiVal}>
+                        {imeiVal}
+                      </option>
+                    );
+                  })}
+                </select>
+                {ldDevices && <span style={{ position: 'absolute', right: 34, top: '50%', transform: 'translateY(-50%)' }}><Spin /></span>}
+              </div>
+              {errDevices && <span style={{ fontSize: 10, color: '#ef4444', fontWeight: 600 }}>{errDevices}</span>}
+            </Fld>
+
+          </Grid4>
+
+          {/* Vehicle Information */}
+             <SH title="Vehicle Information" color={ACC} />
+          <Grid4 style={{ marginBottom: 16 }}>
+            <Fld label="Vehicle Number" req hint="e.g. MH00AB0000">
+              <input style={{ ...inp, borderColor: vnoErr ? '#ef4444' : '#d0d7de', background: vnoErr ? '#fff5f5' : '#fff' }}
+                value={vF.vehicle_no} placeholder="MH00AB0000" autoFocus
+                onChange={e => { setField('vehicle_no')(e); setMsg(''); checkVno(e.target.value); }}
+                onFocus={onFocus} onBlur={onBlur} />
+              {vnoErr && <span style={{ fontSize: 10, color: '#ef4444', fontWeight: 600 }}>⚠ Already exists</span>}
+            </Fld>
+            <Fld label="Vehicle Type" req>
+              <select style={sel} value={vF.vehicle_type} onChange={setField('vehicle_type')} onFocus={onFocus} onBlur={onBlur}>
+                <option value="">— Select —</option>
+                {VEH_TYPES.map(o => <option key={o}>{o}</option>)}
+              </select>
+            </Fld>
+            <Fld label="Speed Limit (km/h)" req>
+              <input style={inp} type="number" min={0} value={vF.speed_limit_kph} onChange={setField('speed_limit_kph')} onFocus={onFocus} onBlur={onBlur} />
+            </Fld>
+            <Fld label="Mileage (km/l)" req>
+              <input style={inp} type="number" min={0} value={vF.mileage} onChange={setField('mileage')} onFocus={onFocus} onBlur={onBlur} />
+            </Fld>
+            <Fld label="Fuel Type" opt>
+              <select style={sel} value={vF.fuel_type} onChange={setField('fuel_type')} onFocus={onFocus} onBlur={onBlur}>
+                <option value="">— Select —</option>
+                {FUEL_TYPES.map(o => <option key={o}>{o}</option>)}
+              </select>
+            </Fld>
+            <Fld label="Subscription Start" req>
+              <input style={inp} type="date" value={vF.sub_start} onChange={setField('sub_start')} onFocus={onFocus} onBlur={onBlur} />
+            </Fld>
+            <Fld label="Subscription Due" req>
+              <input style={inp} type="date" value={vF.sub_due} onChange={setField('sub_due')} onFocus={onFocus} onBlur={onBlur} />
+            </Fld>
+            <Fld label="Vehicle Nickname" opt>
+              <input style={inp} value={vF.nickname} placeholder="Nickname" onChange={setField('nickname')} onFocus={onFocus} onBlur={onBlur} />
+            </Fld>
+            <Fld label="Current Odometer (km)" opt>
+              <input style={inp} type="number" min={0} value={vF.odometer} onChange={setField('odometer')} onFocus={onFocus} onBlur={onBlur} />
+            </Fld>
+            <Fld label="Duration Odometer (km)" opt>
+              <input style={inp} type="number" min={0} value={vF.duration_odometer} onChange={setField('duration_odometer')} onFocus={onFocus} onBlur={onBlur} />
+            </Fld>
+          </Grid4>
+
+          {/* Parking alarm */}
+          <div style={{ marginBottom: 16 }}>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, cursor: 'pointer', color: '#374151' }}>
+              <input type="checkbox" checked={!!vF.parking_alarm} onChange={setField('parking_alarm')} style={{ accentColor: ACC, width: 14, height: 14 }} />
+              Enable parking violation alarm on Ignition ON
+            </label>
+          </div>
+
+          {/* Additional Vehicle Details (collapsible) */}
+          <div onClick={() => setDetail(o => !o)}
+            style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', background: '#f0f2f5', padding: '9px 16px', border: '1px solid #dde1e7', cursor: 'pointer', userSelect: 'none', borderRadius: 3, marginTop: 4 }}>
+            <span style={{ fontSize: 13, fontWeight: 700, color: '#374151' }}>Additional Vehicle Details</span>
+            <span style={{ fontSize: 20, color: ACC, fontWeight: 700, lineHeight: 1 }}>{detail ? '−' : '+'}</span>
+          </div>
+
+          {detail && (
+            <div style={{ paddingTop: 16 }}>
+              <Grid4>
+                <Fld label="Owner Name" opt>
+                  <input style={inp} value={vF.owner_name} placeholder="Owner Name" onChange={setField('owner_name')} onFocus={onFocus} onBlur={onBlur} />
+                </Fld>
+                <Fld label="Owned By" opt>
+                  <select style={sel} value={vF.owned_by} onChange={setField('owned_by')} onFocus={onFocus} onBlur={onBlur}>
+                    <option value="">— Select —</option>
+                    {OWN_TYPES.map(o => <option key={o}>{o}</option>)}
+                  </select>
+                </Fld>
+                <Fld label="Vehicle Brand" opt>
+                  <input style={inp} value={vF.vehicle_brand} placeholder="e.g. Toyota" onChange={setField('vehicle_brand')} onFocus={onFocus} onBlur={onBlur} />
+                </Fld>
+                <Fld label="Vehicle Model" opt>
+                  <input style={inp} value={vF.vehicle_model} placeholder="e.g. Innova" onChange={setField('vehicle_model')} onFocus={onFocus} onBlur={onBlur} />
+                </Fld>
+                <Fld label="Vehicle Body" opt>
+                  <select style={sel} value={vF.vehicle_body} onChange={setField('vehicle_body')} onFocus={onFocus} onBlur={onBlur}>
+                    <option value="">— Select —</option>
+                    {BODY_TYPES.map(o => <option key={o}>{o}</option>)}
+                  </select>
+                </Fld>
+                <Fld label="Seating Capacity" opt>
+                  <input style={inp} type="number" min={0} value={vF.capacity} onChange={setField('capacity')} onFocus={onFocus} onBlur={onBlur} />
+                </Fld>
+                <Fld label="Manufacture Date" opt>
+                  <input style={inp} type="date" value={vF.manufacture_date} onChange={setField('manufacture_date')} onFocus={onFocus} onBlur={onBlur} />
+                </Fld>
+                <Fld label="Purchase Date" opt>
+                  <input style={inp} type="date" value={vF.purchase_date} onChange={setField('purchase_date')} onFocus={onFocus} onBlur={onBlur} />
+                </Fld>
+              </Grid4>
+            </div>
+          )}
+        </div>
+
+        {/* Footer */}
+        <div style={{ padding: '10px 20px', borderTop: '1px solid #e2e8f0', display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: 8, background: '#f8fafc', flexShrink: 0, flexWrap: 'wrap', borderRadius: '0 0 4px 4px' }}>
+          {msg && (
+            <span style={{ fontSize: 12, marginRight: 'auto', fontWeight: 600, color: msg[0] === '✓' ? '#16a34a' : '#dc2626' }}>{msg}</span>
+          )}
+          <button onClick={() => { onClose?.(); resetAll(); }}
+            style={{ height: 34, padding: '0 20px', background: '#6b7280', color: '#fff', border: 'none', borderRadius: 3, fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>
+            Close
+          </button>
+          <button onClick={save} disabled={saving}
+            style={{ height: 34, padding: '0 28px', background: saving ? '#a78bfa' : ACC, color: '#fff', border: 'none', borderRadius: 3, fontSize: 13, fontWeight: 600, cursor: saving ? 'not-allowed' : 'pointer', display: 'flex', alignItems: 'center', gap: 6 }}>
+            {saving
+              ? <><span style={{ width: 12, height: 12, border: '2px solid rgba(255,255,255,0.35)', borderTopColor: '#fff', borderRadius: '50%', animation: 'vSpin .7s linear infinite', display: 'inline-block' }} />Saving…</>
+              : 'Save Vehicle'}
+          </button>
+        </div>
+      </div>
+      <style>{`@keyframes vSpin { to { transform: rotate(360deg) } }`}</style>
+    </div>
+  );
+}
